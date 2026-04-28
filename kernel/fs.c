@@ -417,6 +417,49 @@ bmap(struct inode *ip, uint bn)
     return addr;
   }
 
+  bn -= NINDIRECT;
+
+  // === Phần 3: Doubly-indirect blocks (bn = 0..65535) ===
+  if(bn < NINDIRECT * NINDIRECT){
+    // --- Bước 3a: Load doubly-indirect block ---
+    if((addr = ip->addrs[NDIRECT+1]) == 0){
+      addr = balloc(ip->dev);
+      if(addr == 0)
+        return 0;
+      ip->addrs[NDIRECT+1] = addr;
+    }
+    bp = bread(ip->dev, addr);
+    a = (uint*)bp->data;
+
+    // --- Bước 3b: Tìm singly-indirect block bên trong ---
+    int d_idx = bn / NINDIRECT;
+    if((addr = a[d_idx]) == 0){
+      addr = balloc(ip->dev);
+      if(addr){
+        a[d_idx] = addr;
+        log_write(bp);
+      } else {
+        brelse(bp);
+        return 0;
+      }
+    }
+    brelse(bp);
+
+    // --- Bước 3c: Load singly-indirect block và tìm data block ---
+    bp = bread(ip->dev, addr);
+    a = (uint*)bp->data;
+    int s_idx = bn % NINDIRECT;
+    if((addr = a[s_idx]) == 0){
+      addr = balloc(ip->dev);
+      if(addr){
+        a[s_idx] = addr;
+        log_write(bp);
+      }
+    }
+    brelse(bp);
+    return addr;
+  }
+
   panic("bmap: out of range");
 }
 
@@ -425,9 +468,9 @@ bmap(struct inode *ip, uint bn)
 void
 itrunc(struct inode *ip)
 {
-  int i, j;
-  struct buf *bp;
-  uint *a;
+  int i, j, k;
+  struct buf *bp, *bp2;
+  uint *a, *a2;
 
   for(i = 0; i < NDIRECT; i++){
     if(ip->addrs[i]){
@@ -446,6 +489,28 @@ itrunc(struct inode *ip)
     brelse(bp);
     bfree(ip->dev, ip->addrs[NDIRECT]);
     ip->addrs[NDIRECT] = 0;
+  }
+
+  // === Giải phóng doubly-indirect blocks ===
+  if(ip->addrs[NDIRECT+1]){
+    bp = bread(ip->dev, ip->addrs[NDIRECT+1]);
+    a = (uint*)bp->data;
+    for(j = 0; j < NINDIRECT; j++){
+      if(a[j]){
+        bp2 = bread(ip->dev, a[j]);
+        a2 = (uint*)bp2->data;
+        for(k = 0; k < NINDIRECT; k++){
+          if(a2[k]){
+            bfree(ip->dev, a2[k]); // Tầng 3: Giải phóng data blocks
+          }
+        }
+        brelse(bp2);
+        bfree(ip->dev, a[j]); // Tầng 2: Giải phóng singly-indirect blocks
+      }
+    }
+    brelse(bp);
+    bfree(ip->dev, ip->addrs[NDIRECT+1]); // Tầng 1: Giải phóng doubly-indirect block
+    ip->addrs[NDIRECT+1] = 0;
   }
 
   ip->size = 0;
