@@ -65,3 +65,7 @@
 //   TRAPFRAME (p->trapframe, used by the trampoline)
 //   TRAMPOLINE (the same page as in the kernel)
 #define TRAPFRAME (TRAMPOLINE - PGSIZE)
+struct usyscall {
+  int pid;  // công khai PID cho user space
+};
+#define USYSCALL (TRAPFRAME - PGSIZE)

@@ -6,6 +6,7 @@
 #include "proc.h"
 #include "defs.h"
 
+
 struct cpu cpus[NCPU];
 
 struct proc proc[NPROC];
@@ -103,31 +104,49 @@ allocproc(void)
     }
   }
   return 0;
+p->usyscall->pid = p->pid;
 
-found:
+  // Cấp phát trang cho usyscall
+  found:
   p->pid = allocpid();
-
-  // Allocate a trapframe page.
+  p->state = SLEEPING; 
+  // 1. Cấp phát trapframe
   if((p->trapframe = (struct trapframe *)kalloc()) == 0){
+    p->state = UNUSED;
     release(&p->lock);
     return 0;
   }
 
-  // An empty user page table.
+  // 2. Cấp phát usyscall
+  if((p->usyscall = (struct usyscall *)kalloc()) == 0){
+    if(p->trapframe) kfree((void*)p->trapframe);
+    p->trapframe = 0;
+    p->state = UNUSED;
+    release(&p->lock);
+    return 0;
+  }
+  p->usyscall->pid = p->pid; 
+
+  // 3. Khởi tạo Pagetable
   p->pagetable = proc_pagetable(p);
   if(p->pagetable == 0){
-    freeproc(p);
+    if(p->trapframe) kfree((void*)p->trapframe);
+    p->trapframe = 0;
+    if(p->usyscall) kfree((void*)p->usyscall);
+    p->usyscall = 0;
+    p->state = UNUSED;
     release(&p->lock);
     return 0;
   }
 
-  // Set up new context to start executing at forkret,
-  // which returns to user space.
+ // ... (phần map pagetable giữ nguyên) ...
+
+  // 4. Cấu hình context
   memset(&p->context, 0, sizeof(p->context));
   p->context.ra = (uint64)forkret;
   p->context.sp = p->kstack + PGSIZE;
+  return p; // Trả về p trong khi VẪN ĐANG GIỮ LOCK
 
-  return p;
 }
 
 // free a proc structure and the data hanging from it,
@@ -136,12 +155,21 @@ found:
 static void
 freeproc(struct proc *p)
 {
+  // 1. Giải phóng RAM vật lý TRƯỚC
   if(p->trapframe)
     kfree((void*)p->trapframe);
   p->trapframe = 0;
+
+  if(p->usyscall)
+    kfree((void*)p->usyscall);
+  p->usyscall = 0;
+
+  // 2. Sau đó mới gỡ ánh xạ trong bảng trang
   if(p->pagetable)
-    proc_freepagetable(p->pagetable, p->sz);
+    proc_freepagetable(p->pagetable, p->sz); 
   p->pagetable = 0;
+
+  // 3. Reset các thông số khác
   p->sz = 0;
   p->pid = 0;
   p->parent = 0;
@@ -182,7 +210,15 @@ proc_pagetable(struct proc *p)
     return 0;
   }
 
-  return pagetable;
+  // Map trang USYSCALL với quyền Read và User (PTE_R | PTE_U)
+  if(mappages(pagetable, USYSCALL, PGSIZE,
+              (uint64)(p->usyscall), PTE_R | PTE_U) < 0){
+    uvmunmap(pagetable, TRAMPOLINE, 1, 0);
+    uvmunmap(pagetable, TRAPFRAME, 1, 0);
+    return 0;
+  }
+
+   return pagetable;
 }
 
 // Free a process's page table, and free the
@@ -192,6 +228,12 @@ proc_freepagetable(pagetable_t pagetable, uint64 sz)
 {
   uvmunmap(pagetable, TRAMPOLINE, 1, 0);
   uvmunmap(pagetable, TRAPFRAME, 1, 0);
+  
+  // THÊM DÒNG NÀY ĐỂ GỠ ÁNH XẠ USYSCALL
+  // Lưu ý tham số cuối là 0 vì mình chỉ hủy ánh xạ, 
+  // việc giải phóng RAM vật lý đã làm ở freeproc rồi.
+  uvmunmap(pagetable, USYSCALL, 1, 0); 
+  
   uvmfree(pagetable, sz);
 }
 
@@ -215,7 +257,6 @@ userinit(void)
 
   p = allocproc();
   initproc = p;
-  
   // allocate one user page and copy init's instructions
   // and data into it.
   uvminit(p->pagetable, initcode, sizeof(initcode));
