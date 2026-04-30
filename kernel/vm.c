@@ -151,13 +151,35 @@ mappages(pagetable_t pagetable, uint64 va, uint64 size, uint64 pa, int perm)
   uint64 a, last;
   pte_t *pte;
 
+  // --- BẮT ĐẦU PHẦN SỬA CHO SUPERPAGE ---
+  if(size == 0x200000){ // Nếu size đúng bằng 2MB
+    // Kiểm tra xem va và pa có chia hết cho 2MB không (căn lề)
+    if((va % 0x200000) != 0 || (pa % 0x200000) != 0)
+      return -1;
+
+    // Gọi walk với level 1 để dừng lại ở tầng giữa
+    if((pte = walk(pagetable, va, 1)) == 0)
+      return -1;
+    
+    // Nếu trang này đã được map rồi thì báo lỗi
+    if(*pte & PTE_V)
+      panic("mappages: remap superpage");
+
+    // Ghi trực tiếp địa chỉ vật lý và cờ vào PTE ở Level 1
+    *pte = PA2PTE(pa) | perm | PTE_V;
+    return 0; // Xong, không cần chạy vòng lặp bên dưới
+  }
+  // --- KẾT THÚC PHẦN SỬA ---
+
   a = PGROUNDDOWN(va);
   last = PGROUNDDOWN(va + size - 1);
   for(;;){
+    // Lưu ý: Với trang 4KB, walk phải gọi với level 1 
+    // để nó tự động tạo các tầng và trả về PTE ở Level 0
     if((pte = walk(pagetable, a, 1)) == 0)
       return -1;
     if(*pte & PTE_V)
-      panic("remap");
+      panic("mappages: remap");
     *pte = PA2PTE(pa) | perm | PTE_V;
     if(a == last)
       break;

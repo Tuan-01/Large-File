@@ -20,10 +20,25 @@ ugetpid_test()
   printf("ugetpid_test: OK\n");
 }
 
-int
-main(int argc, char *argv[])
+
+void
+superpg_test()
 {
+  printf("superpg_test: start\n");
+  char *p = sbrk(0x200000); // Yêu cầu cấp 2MB bộ nhớ
+  if(p == (char*)-1){
+    printf("superpg_test: sbrk failed\n");
+    exit(1);
+  }
+  p[0] = 'a';
+  p[0x200000 - 1] = 'b';
+  printf("superpg_test: OK\n");
+}
+
+// Trong hàm main(), hãy gọi nó:
+int main(int argc, char *argv[]) {
   ugetpid_test();
+  superpg_test(); // <-- Thêm dòng này vào
   printf("pgtbltest: all tests passed\n");
   exit(0);
 }
